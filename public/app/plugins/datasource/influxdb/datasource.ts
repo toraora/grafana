@@ -43,12 +43,11 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
   }
 
   query(options: any) {
-    let timeFilter = this.getTimeFilter(options);
     const scopedVars = options.scopedVars;
     const targets = _.cloneDeep(options.targets);
     const queryTargets: any[] = [];
     let queryModel: InfluxQueryModel;
-    let i, y;
+    let i, j, k, y;
 
     let allQueries = _.map(targets, target => {
       if (target.hide) {
@@ -61,7 +60,21 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
       scopedVars.interval = scopedVars.__interval;
 
       queryModel = new InfluxQueryModel(target, this.templateSrv, scopedVars);
-      return queryModel.render(true);
+      var rendered = queryModel.render(true);
+
+      var timeFilter = this.getTimeFilter(options, target.offset);
+
+      // add global adhoc filters to timeFilter
+      var adhocFilters = this.templateSrv.getAdhocFilters(this.name);
+      if (adhocFilters.length > 0) {
+        timeFilter += ' AND ' + queryModel.renderAdhocFilters(adhocFilters);
+      }
+
+      // replace grafana variables
+      scopedVars.timeFilter = { value: timeFilter };
+
+      // replace templated variables
+      return this.templateSrv.replace(rendered, scopedVars);
     }).reduce((acc, current) => {
       if (current !== '') {
         acc += ';' + current;
@@ -73,18 +86,6 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
       return Promise.resolve({ data: [] });
     }
 
-    // add global adhoc filters to timeFilter
-    const adhocFilters = this.templateSrv.getAdhocFilters(this.name);
-    if (adhocFilters.length > 0) {
-      timeFilter += ' AND ' + queryModel.renderAdhocFilters(adhocFilters);
-    }
-
-    // replace grafana variables
-    scopedVars.timeFilter = { value: timeFilter };
-
-    // replace templated variables
-    allQueries = this.templateSrv.replace(allQueries, scopedVars);
-
     return this._seriesQuery(allQueries, options).then((data: any): any => {
       if (!data || !data.results) {
         return [];
@@ -95,6 +96,14 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
         const result = data.results[i];
         if (!result || !result.series) {
           continue;
+        }
+
+        if (queryTargets[i].offset) {
+          for (j = 0; j < data.results[i].series.length; j++) {
+            for (k = 0; k < data.results[i].series[j].values.length; k++) {
+              data.results[i].series[j].values[k][0] += queryTargets[i].offset * 1000;
+            }
+          }
         }
 
         const target = queryTargets[i];
@@ -134,7 +143,7 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
       });
     }
 
-    const timeFilter = this.getTimeFilter({ rangeRaw: options.rangeRaw, timezone: options.timezone });
+    const timeFilter = this.getTimeFilter({ rangeRaw: options.rangeRaw, timezone: options.timezone }, 0);
     let query = options.annotation.query.replace('$timeFilter', timeFilter);
     query = this.templateSrv.replace(query, null, 'regex');
 
@@ -227,7 +236,7 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
     }
 
     if (options && options.range) {
-      const timeFilter = this.getTimeFilter({ rangeRaw: options.range, timezone: options.timezone });
+      const timeFilter = this.getTimeFilter({ rangeRaw: options.range, timezone: options.timezone }, 0);
       query = query.replace('$timeFilter', timeFilter);
     }
 
@@ -355,10 +364,15 @@ export default class InfluxDatasource extends DataSourceApi<InfluxQuery, InfluxO
       );
   }
 
-  getTimeFilter(options: any) {
-    const from = this.getInfluxTime(options.rangeRaw.from, false, options.timezone);
-    const until = this.getInfluxTime(options.rangeRaw.to, true, options.timezone);
+  getTimeFilter(options: any, offset: number) {
+    let from = this.getInfluxTime(options.rangeRaw.from, false, options.timezone);
+    let until = this.getInfluxTime(options.rangeRaw.to, true, options.timezone);
     const fromIsAbsolute = from[from.length - 1] === 'ms';
+
+    if (offset) {
+      from = '(' + from + ')' + ' - ' + offset + 's';
+      until = '(' + until + ')' + ' - ' + offset + 's';
+    }
 
     if (until === 'now()' && !fromIsAbsolute) {
       return 'time >= ' + from;
