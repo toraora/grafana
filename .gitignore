@@ -125,3 +125,6 @@ compilation-stats.json
 
 # auto generated frontend docs
 /docs/sources/packages_api
+
+# temp directory used as $HOME in docker build container
+/docker-home/
